@@ -114,42 +114,13 @@ in {
         These users will be banned from the server.
       '';
     };
-
-    bepinexMods = lib.mkOption {
-      type = with lib; types.listOf types.package;
-      default = [];
-      description = "BepInEx mods to install.";
-      example = lib.types.literalExpression ''
-        [
-          (pkgs.fetchValheimThunderstoreMod {
-            owner = "Somebody";
-            name = "SomeMod";
-            version = "x.y.z";
-            hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-          })
-        ]
-      '';
-    };
-
-    bepinexConfigs = lib.mkOption {
-      type = with lib; types.listOf types.path;
-      default = [];
-      description = ''
-        Config files for BepInEx mods.
-
-        The filename must be what the given mod is expecting, otherwise it will
-        not be loaded.
-      '';
-      example = lib.types.literalExpression ''
-        [
-          ./some_mod.cfg
-        ]
-      '';
-    };
   };
 
   config = lib.mkIf cfg.enable {
-    nixpkgs.overlays = [self.overlays.default steam-fetcher.overlays.default];
+    nixpkgs.overlays = [
+      self.overlays.default
+      steam-fetcher.overlays.default
+    ];
 
     users = {
       users.valheim = {
@@ -171,25 +142,6 @@ in {
         wantedBy = ["multi-user.target"];
 
         preStart = let
-          mods = pkgs.symlinkJoin {
-            name = "valheim-bepinex-mods";
-            paths = cfg.bepinexMods;
-            postBuild = ''
-              rm -f \
-                "$out"/*.md \
-                "$out"/icon.png \
-                "$out"/manifest.json
-            '';
-          };
-          modConfigs =
-            pkgs.runCommandLocal "valheim-bepinex-configs" {
-              configs = cfg.bepinexConfigs;
-            } ''
-              mkdir "$out"
-              for cfg in $configs; do
-                cp $cfg $out/$(stripHash $cfg)
-              done
-            '';
           createListFile = name: list: ''
               echo "// List of Steam IDs for ${name} ONE per line
               ${lib.strings.concatStringsSep "\n" list}" > ${stateDir}/.config/unity3d/IronGate/Valheim/${name}
@@ -201,76 +153,14 @@ in {
             ${createListFile "adminlist.txt" cfg.adminList}
             ${createListFile "permittedlist.txt" cfg.permittedList}
             ${createListFile "bannedlist.txt" cfg.bannedList}
-          ''
-          + lib.optionalString (cfg.bepinexMods != []) ''
-            if [ -e ${installDir} ]; then
-              chmod -R +w ${installDir}
-              rm -rf ${installDir}
-            fi
-            mkdir ${installDir}
-            cp -r \
-              ${pkgs.valheim-server-unwrapped}/* \
-              ${pkgs.valheim-bepinex-pack}/* \
-              ${installDir}
-
-            # BepInEx doesn't like read-only files.
-            chmod -R u+w ${installDir}
-          ''
-          + lib.optionalString (cfg.bepinexMods != []) ''
-            # Install extra mods.
-            cp -rL "${mods}"/. ${installDir}/BepInEx/plugins/
-
-            # BepInEx *really* doesn't like *any* read-only files.
-            chmod -R u+w ${installDir}/BepInEx/plugins/
-          ''
-          + lib.optionalString (cfg.bepinexConfigs != []) ''
-            # Install extra mod configs.
-            cp -r ${modConfigs}/. ${installDir}/BepInEx/config/
-
-            # BepInEx *really* doesn't like *any* read-only files.
-            chmod -R u+w ${installDir}/BepInEx/config/
           '';
 
-        serviceConfig = let
-          valheimBepInExFHSEnvWrapper = pkgs.buildFHSUserEnv {
-            name = "valheim-server";
-            runScript = pkgs.writeScript "valheim-server-bepinex-wrapper" ''
-              # Whether or not to enable Doorstop. Valid values: TRUE or FALSE
-              export DOORSTOP_ENABLE=TRUE
-
-              # What .NET assembly to execute. Valid value is a path to a .NET DLL that mono can execute.
-              export DOORSTOP_INVOKE_DLL_PATH="${installDir}/BepInEx/core/BepInEx.Preloader.dll"
-
-              # Which folder should be put in front of the Unity dll loading path
-              export DOORSTOP_CORLIB_OVERRIDE_PATH="${installDir}/unstripped_corlib"
-
-              export LD_LIBRARY_PATH=${installDir}/doorstop_libs:$LD_LIBRARY_PATH
-              export LD_PRELOAD="libdoorstop_x64.so"
-
-              export LD_LIBRARY_PATH=${pkgs.steamworks-sdk-redist}/lib:$LD_LIBRARY_PATH
-              export SteamAppId=892970
-
-              exec ${installDir}/valheim_server.x86_64 "$@"
-            '';
-
-            targetPkgs = with pkgs;
-              pkgs: [
-                pkgs.steamworks-sdk-redist
-                zlib
-                pulseaudio
-              ];
-          };
-        in {
+        serviceConfig = {
           Type = "exec";
           User = "valheim";
-          ExecStart = let
-            valheimServerPkg =
-              if (cfg.bepinexMods != [])
-              then valheimBepInExFHSEnvWrapper
-              else pkgs.valheim-server;
-          in
+          ExecStart = 
             lib.strings.concatStringsSep " " ([
-                "${valheimServerPkg}/bin/valheim-server"
+                "${pkgs.valheim-server}/bin/valheim-server"
                 "-name \"${cfg.serverName}\""
               ]
               ++ (lib.lists.optional (cfg.worldName != null) "-world \"${cfg.worldName}\"")
